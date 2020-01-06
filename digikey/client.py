@@ -3,10 +3,12 @@ import os
 import re
 import typing as t
 from pathlib import Path
+import json
 
 import requests
 from fake_useragent import UserAgent
 
+from datetime import datetime, timedelta
 from digikey import models
 from digikey.decorators import retry
 from digikey.exceptions import DigikeyError
@@ -27,7 +29,8 @@ class DigikeyClient(object):
                  a_id: t.Optional[str] = None,
                  a_secret: t.Optional[str] = None,
                  a_token_storage_path: t.Optional[str] = None,
-                 base_url: t.Optional[str] = DEFAULT_BASE_URL
+                 base_url: t.Optional[str] = DEFAULT_BASE_URL,
+                 cache_max_age: t.Optional[int] = None
                  ) -> None:
 
         a_id = a_id or os.getenv('DIGIKEY_CLIENT_ID')
@@ -49,6 +52,8 @@ class DigikeyClient(object):
 
         self._id = a_id
         self._secret = a_secret
+        self._cache_path = Path(a_token_storage_path)
+        self._cache_max_age = timedelta(minutes=cache_max_age or int(os.getenv('DIGIKEY_CACHE_MAX_AGE')))
         self._token_storage_path = Path(a_token_storage_path).joinpath('token_storage.json')
         self.base_url = base_url
         self.oauth2 = TokenHandler().get_access_token()
@@ -115,6 +120,7 @@ class DigikeyClient(object):
              partnr: str,
              include_associated: bool = False,
              include_for_use_with: bool = False,
+             use_cache: bool = True,
              ) -> dict:
         """
         Query part by unique ID
@@ -122,10 +128,21 @@ class DigikeyClient(object):
             partnr (str): Part number. Works best with Digi-Key part numbers.
             include_associated (bool): The option to include all Associated products
             include_for_use_with (bool): The option to include all For Use With product
+            use_cache (bool): Use cache to limit requests made to API
         Kwargs:
         Returns:
             dict. See `models.Part` for exact fields.
         """
+        part_cache = self._cache_path.joinpath('part', '{}.json'.format(partnr.replace('/','_')))
+        if use_cache and part_cache.exists():
+            cache = json.load(open(part_cache))
+            cache_datetime = datetime.fromisoformat(cache['timestamp'])
+            if cache_datetime + self._cache_max_age > datetime.now():
+                if len(cache.keys()) == 1:
+                    raise DigikeyError("[CACHE] No results found for {}".format(partnr))
+                return cache
+            part_cache.unlink()
+
         data = {
             'part': partnr,
             'include_all_associated_products': include_associated,
@@ -139,4 +156,14 @@ class DigikeyClient(object):
         # Convert `query` to format that Octopart accepts.
         params = models.PartDetailPostRequest.camelize(models.PartDetailPostRequest(data).to_primitive())
 
-        return self._request('/partdetails', data=params)
+        try:
+            result = self._request('/partdetails', data=params)
+        except DigikeyError as e:
+            json.dump({'timestamp': datetime.now().isoformat()}, open(part_cache,'w'))
+            raise e
+
+        result_cache = dict(result)
+        result_cache['timestamp'] = datetime.now().isoformat()
+        json.dump(result_cache, open(part_cache,'w'))
+
+        return result

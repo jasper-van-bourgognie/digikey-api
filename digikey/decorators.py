@@ -43,7 +43,7 @@ def wrap_exception_in(exc_type, catch=Exception):
 # wait up to 10 seconds between each retry,
 # and stop retrying after 20 total seconds.
 exponential_backoff = retrying.retry(
-    retry_on_exception=lambda exc: isinstance(exc, RequestException),
+    retry_on_exception=lambda exc: isinstance(exc, RequestException) and exc.response.status_code != 404,
     wait_exponential_multiplier=100,
     wait_exponential_max=10000,
     stop_max_delay=20000)
