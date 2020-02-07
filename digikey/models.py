@@ -263,5 +263,12 @@ class Part:
     def datasheet(self) -> str:
         return self._part.get('PrimaryDatasheet', None)
 
+    def price(self, qty=1):
+        if qty < self.moq:
+            return None
+        breaks={b.breakquantity: b for b in self.standard_pricing}
+        break_qty=max(filter(lambda q: q <= qty, breaks.keys()))
+        return breaks[break_qty].unitprice
+
     def __repr__(self):
         return '<Part mpn=%s>' % self.mpn
